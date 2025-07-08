@@ -214,8 +214,8 @@ build_java_with_retry() {
             GRADLE_OPTS="$GRADLE_OPTS -x test -x check"
         fi
         
-        # Try to build
-        if ./gradlew $GRADLE_TASKS $GRADLE_OPTS; then
+        # Try to build - IMPORTANT: Options must come before tasks
+        if ./gradlew $GRADLE_OPTS $GRADLE_TASKS; then
             BUILD_SUCCESS=1
             echo "Java build successful!"
         else
