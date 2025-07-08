@@ -57,10 +57,10 @@ build_cpp() {
     mkdir -p $BUILD_DIR
     cd $BUILD_DIR
     
-    # Configure with CMake
+    # Configure with CMake - set install prefix to root
     cmake \
         -DCMAKE_BUILD_TYPE=$BUILD_TYPE \
-        -DCMAKE_INSTALL_PREFIX=$INSTALL_DIR \
+        -DCMAKE_INSTALL_PREFIX=/ \
         -DKUDU_USE_LTO=OFF \
         -DCMAKE_EXPORT_COMPILE_COMMANDS=ON \
         $SOURCE_ROOT
@@ -68,8 +68,15 @@ build_cpp() {
     # Build
     make -j$(nproc)
     
-    # Install
+    # Install with DESTDIR to get files in the right place
     make install DESTDIR=$INSTALL_DIR
+    
+    # The above creates nested directories, so we need to move files up
+    if [ -d "$INSTALL_DIR/usr/local" ]; then
+        # Move files from usr/local/* to the root
+        cp -r $INSTALL_DIR/usr/local/* $INSTALL_DIR/
+        rm -rf $INSTALL_DIR/usr
+    fi
     
     echo "$BUILD_TYPE build complete!"
 }
