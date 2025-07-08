@@ -194,46 +194,6 @@ cleanup_gradle_locks() {
     sleep 2
 }
 
-# Function to build Java with retry logic
-build_java_with_retry() {
-    local MAX_RETRIES=3
-    local RETRY_COUNT=0
-    local BUILD_SUCCESS=0
-    
-    while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ $BUILD_SUCCESS -eq 0 ]; do
-        if [ $RETRY_COUNT -gt 0 ]; then
-            echo "Retry attempt $RETRY_COUNT of $MAX_RETRIES..."
-            cleanup_gradle_locks
-        fi
-        
-        # Set environment variable to disable daemon instead of using command line flag
-        export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false"
-        
-        # Build command
-        local GRADLE_CMD="./gradlew clean assemble"
-        
-        # Add test exclusions if requested
-        if [ "$SKIP_JAVA_TESTS" -eq 1 ]; then
-            GRADLE_CMD="$GRADLE_CMD -x test -x check -x spotbugsMain -x spotbugsTest -x rat"
-        fi
-        
-        # Try to build
-        echo "Running: $GRADLE_CMD"
-        if $GRADLE_CMD; then
-            BUILD_SUCCESS=1
-            echo "Java build successful!"
-        else
-            RETRY_COUNT=$((RETRY_COUNT + 1))
-            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
-                echo "Build failed, will retry after cleanup..."
-                sleep 5
-            fi
-        fi
-    done
-    
-    return $((1 - BUILD_SUCCESS))
-}
-
 # Build Java artifacts
 if [ "$SKIP_JAVA" -eq 0 ]; then
     echo "Building Java artifacts..."
@@ -252,23 +212,78 @@ if [ "$SKIP_JAVA" -eq 0 ]; then
     
     # Use gradlew to build Java artifacts
     if [ -f "./gradlew" ]; then
-        if build_java_with_retry; then
+        # Set environment to disable daemon
+        export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false"
+        
+        echo "Building all Java artifacts..."
+        
+        # Build with retry logic
+        local MAX_RETRIES=3
+        local RETRY_COUNT=0
+        local BUILD_SUCCESS=0
+        
+        while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ $BUILD_SUCCESS -eq 0 ]; do
+            if [ $RETRY_COUNT -gt 0 ]; then
+                echo "Retry attempt $RETRY_COUNT of $MAX_RETRIES..."
+                cleanup_gradle_locks
+                sleep 5
+            fi
+            
+            # Build command - build all artifacts
+            local GRADLE_CMD="./gradlew clean"
+            
+            # Main build tasks
+            GRADLE_CMD="$GRADLE_CMD assemble"
+            
+            # Add javadoc and sources tasks
+            GRADLE_CMD="$GRADLE_CMD javadocJar sourcesJar"
+            
+            # Build shadow/fat JARs if available
+            GRADLE_CMD="$GRADLE_CMD shadowJar || true"
+            
+            # Skip tests if requested
+            if [ "$SKIP_JAVA_TESTS" -eq 1 ]; then
+                GRADLE_CMD="$GRADLE_CMD -x test -x check -x spotbugsMain -x spotbugsTest -x rat"
+            else
+                # Include test artifacts
+                GRADLE_CMD="$GRADLE_CMD testJar"
+            fi
+            
+            # Try to build
+            echo "Running: $GRADLE_CMD"
+            if eval $GRADLE_CMD; then
+                BUILD_SUCCESS=1
+                echo "Java build successful!"
+            else
+                RETRY_COUNT=$((RETRY_COUNT + 1))
+            fi
+        done
+        
+        if [ $BUILD_SUCCESS -eq 1 ]; then
             # Create java directory in package
             mkdir -p $PACKAGE_DIR/java
             
-            # Copy built JARs
-            find . -name "*.jar" -not -path "*/src/*" -not -path "*/.gradle/*" -not -path "*/test/*" | while read jar; do
-                # Create directory structure
+            # Copy all JAR files
+            echo "Copying Java artifacts..."
+            find . -name "*.jar" -not -path "*/src/*" -not -path "*/.gradle/*" | while read jar; do
                 jar_dir=$(dirname $jar)
-                mkdir -p $PACKAGE_DIR/java/$jar_dir
-                cp $jar $PACKAGE_DIR/java/$jar_dir/
+                # Flatten structure - put all JARs in java directory
+                cp -v "$jar" $PACKAGE_DIR/java/
+            done
+            
+            # Also copy to preserve directory structure if needed
+            mkdir -p $PACKAGE_DIR/java/repository
+            find . -name "*.jar" -not -path "*/src/*" -not -path "*/.gradle/*" | while read jar; do
+                jar_dir=$(dirname $jar)
+                mkdir -p $PACKAGE_DIR/java/repository/$jar_dir
+                cp "$jar" $PACKAGE_DIR/java/repository/$jar_dir/
             done
             
             # Copy pom files for Maven compatibility
             find . -name "pom.xml" | while read pom; do
                 pom_dir=$(dirname $pom)
-                mkdir -p $PACKAGE_DIR/java/$pom_dir
-                cp $pom $PACKAGE_DIR/java/$pom_dir/
+                mkdir -p $PACKAGE_DIR/java/repository/$pom_dir
+                cp "$pom" $PACKAGE_DIR/java/repository/$pom_dir/
             done
         else
             echo "ERROR: Java build failed after $MAX_RETRIES attempts"
