@@ -206,16 +206,20 @@ build_java_with_retry() {
             cleanup_gradle_locks
         fi
         
-        # Build command with options
-        local GRADLE_OPTS="--no-daemon --no-parallel"
-        local GRADLE_TASKS="clean assemble"
+        # Set environment variable to disable daemon instead of using command line flag
+        export GRADLE_OPTS="-Dorg.gradle.daemon=false -Dorg.gradle.parallel=false"
         
+        # Build command
+        local GRADLE_CMD="./gradlew clean assemble"
+        
+        # Add test exclusions if requested
         if [ "$SKIP_JAVA_TESTS" -eq 1 ]; then
-            GRADLE_OPTS="$GRADLE_OPTS -x test -x check"
+            GRADLE_CMD="$GRADLE_CMD -x test -x check -x spotbugsMain -x spotbugsTest -x rat"
         fi
         
-        # Try to build - IMPORTANT: Options must come before tasks
-        if ./gradlew $GRADLE_OPTS $GRADLE_TASKS; then
+        # Try to build
+        echo "Running: $GRADLE_CMD"
+        if $GRADLE_CMD; then
             BUILD_SUCCESS=1
             echo "Java build successful!"
         else

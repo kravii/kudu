@@ -132,9 +132,9 @@ if [ "$SKIP_JAVA" -eq 0 ]; then
     export GRADLE_OPTS="-Dorg.gradle.daemon=false"
     
     if [ -f "./gradlew" ]; then
-        echo "Running Gradle build..."
-        # Simple build command without problematic options
-        if ./gradlew clean assemble -x test -x check; then
+        echo "Running Gradle build (skipping tests)..."
+        # Use proper Gradle syntax: tasks first, then exclusions
+        if ./gradlew clean assemble -x test -x check -x spotbugsMain -x spotbugsTest -x rat; then
             echo "Java build successful!"
             
             # Create java directory in package
