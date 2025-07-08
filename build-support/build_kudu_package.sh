@@ -43,6 +43,8 @@ SKIP_DEBUG=0
 SKIP_RELEASE=0
 SKIP_JAVA=0
 SKIP_THIRDPARTY=0
+SKIP_JAVA_TESTS=0
+CLEAN_GRADLE_CACHE=0
 
 usage() {
     echo "Usage: $0 [options]"
@@ -51,6 +53,8 @@ usage() {
     echo "  --skip-release    Skip building release binaries"
     echo "  --skip-java       Skip building Java artifacts"
     echo "  --skip-thirdparty Skip building thirdparty dependencies"
+    echo "  --skip-java-tests Skip running Java tests"
+    echo "  --clean-gradle    Clean Gradle cache before building"
     echo "  --help            Show this help message"
     exit 1
 }
@@ -71,6 +75,14 @@ while [[ $# -gt 0 ]]; do
             ;;
         --skip-thirdparty)
             SKIP_THIRDPARTY=1
+            shift
+            ;;
+        --skip-java-tests)
+            SKIP_JAVA_TESTS=1
+            shift
+            ;;
+        --clean-gradle)
+            CLEAN_GRADLE_CACHE=1
             shift
             ;;
         --help)
@@ -162,35 +174,109 @@ else
     echo "Skipping release build (--skip-release specified)"
 fi
 
+# Function to clean up Gradle locks
+cleanup_gradle_locks() {
+    echo "Cleaning up Gradle locks..."
+    # Kill any running Gradle daemons
+    if command -v jps >/dev/null 2>&1; then
+        jps | grep GradleDaemon | awk '{print $1}' | xargs -r kill -9 2>/dev/null || true
+    fi
+    
+    # Remove lock files
+    find ~/.gradle -name "*.lock" -o -name "*.lck" | xargs -r rm -f 2>/dev/null || true
+    
+    # Stop Gradle daemon gracefully
+    if [ -f "./gradlew" ]; then
+        ./gradlew --stop 2>/dev/null || true
+    fi
+    
+    # Wait a bit for cleanup
+    sleep 2
+}
+
+# Function to build Java with retry logic
+build_java_with_retry() {
+    local MAX_RETRIES=3
+    local RETRY_COUNT=0
+    local BUILD_SUCCESS=0
+    
+    while [ $RETRY_COUNT -lt $MAX_RETRIES ] && [ $BUILD_SUCCESS -eq 0 ]; do
+        if [ $RETRY_COUNT -gt 0 ]; then
+            echo "Retry attempt $RETRY_COUNT of $MAX_RETRIES..."
+            cleanup_gradle_locks
+        fi
+        
+        # Build command with options
+        local GRADLE_OPTS="--no-daemon --no-parallel"
+        local GRADLE_TASKS="clean assemble"
+        
+        if [ "$SKIP_JAVA_TESTS" -eq 1 ]; then
+            GRADLE_OPTS="$GRADLE_OPTS -x test -x check"
+        fi
+        
+        # Try to build
+        if ./gradlew $GRADLE_TASKS $GRADLE_OPTS; then
+            BUILD_SUCCESS=1
+            echo "Java build successful!"
+        else
+            RETRY_COUNT=$((RETRY_COUNT + 1))
+            if [ $RETRY_COUNT -lt $MAX_RETRIES ]; then
+                echo "Build failed, will retry after cleanup..."
+                sleep 5
+            fi
+        fi
+    done
+    
+    return $((1 - BUILD_SUCCESS))
+}
+
 # Build Java artifacts
 if [ "$SKIP_JAVA" -eq 0 ]; then
     echo "Building Java artifacts..."
     cd $SOURCE_ROOT/java
     
+    # Clean Gradle cache if requested
+    if [ "$CLEAN_GRADLE_CACHE" -eq 1 ]; then
+        echo "Cleaning Gradle cache..."
+        rm -rf ~/.gradle/caches/modules-2/
+        rm -rf ~/.gradle/caches/jars-*
+        rm -rf .gradle/
+    fi
+    
+    # Clean up any stale locks before starting
+    cleanup_gradle_locks
+    
     # Use gradlew to build Java artifacts
     if [ -f "./gradlew" ]; then
-        ./gradlew clean assemble
-        
-        # Create java directory in package
-        mkdir -p $PACKAGE_DIR/java
-        
-        # Copy built JARs
-        find . -name "*.jar" -not -path "*/src/*" -not -path "*/.gradle/*" | while read jar; do
-            # Create directory structure
-            jar_dir=$(dirname $jar)
-            mkdir -p $PACKAGE_DIR/java/$jar_dir
-            cp $jar $PACKAGE_DIR/java/$jar_dir/
-        done
-        
-        # Copy pom files for Maven compatibility
-        find . -name "pom.xml" | while read pom; do
-            pom_dir=$(dirname $pom)
-            mkdir -p $PACKAGE_DIR/java/$pom_dir
-            cp $pom $PACKAGE_DIR/java/$pom_dir/
-        done
+        if build_java_with_retry; then
+            # Create java directory in package
+            mkdir -p $PACKAGE_DIR/java
+            
+            # Copy built JARs
+            find . -name "*.jar" -not -path "*/src/*" -not -path "*/.gradle/*" -not -path "*/test/*" | while read jar; do
+                # Create directory structure
+                jar_dir=$(dirname $jar)
+                mkdir -p $PACKAGE_DIR/java/$jar_dir
+                cp $jar $PACKAGE_DIR/java/$jar_dir/
+            done
+            
+            # Copy pom files for Maven compatibility
+            find . -name "pom.xml" | while read pom; do
+                pom_dir=$(dirname $pom)
+                mkdir -p $PACKAGE_DIR/java/$pom_dir
+                cp $pom $PACKAGE_DIR/java/$pom_dir/
+            done
+        else
+            echo "ERROR: Java build failed after $MAX_RETRIES attempts"
+            echo "You can skip Java build with --skip-java option"
+            exit 1
+        fi
     else
         echo "WARNING: gradlew not found, skipping Java build"
     fi
+    
+    # Clean up Gradle daemon after build
+    cleanup_gradle_locks
 else
     echo "Skipping Java build (--skip-java specified)"
 fi
